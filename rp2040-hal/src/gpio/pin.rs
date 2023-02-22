@@ -94,13 +94,14 @@
 //! [`AnyKind`]: crate::typelevel#anykind-trait-pattern
 use super::dynpin::{DynDisabled, DynInput, DynOutput, DynPinId, DynPinMode};
 use super::{
-    InputOverride, Interrupt, InterruptOverride, OutputDriveStrength, OutputEnableOverride,
-    OutputOverride, OutputSlewRate,
+    DynGroup, DynGroupTrait, DynPin, GroupBank0, GroupQspi, InputOverride, Interrupt,
+    InterruptOverride, OutputDriveStrength, OutputEnableOverride, OutputOverride, OutputSlewRate,
 };
 use crate::gpio::reg::RegisterInterface;
 use crate::typelevel::{Is, NoneT, Sealed};
 use core::convert::Infallible;
 use core::marker::PhantomData;
+use core::ops::Add;
 
 use crate::gpio::dynpin::DynFunction;
 #[cfg(feature = "eh1_0_alpha")]
@@ -442,6 +443,77 @@ impl<I: PinId> Registers<I> {
     }
 }
 
+// impl<I, J> Add<Registers<J>> for Registers<I>
+// where
+//     I: PinId,
+//     J: PinId,
+// {
+//     type Output = MultiRegisters<{ DynGroup::bank0 }, 2>;
+
+//     fn add(self, rhs: Registers<J>) -> Self::Output {
+//         MultiRegisters {}
+//     }
+// }
+
+/// Abstraction around multiple registers
+pub struct MultiRegisters<Grp: DynGroupTrait> {
+    mask: u32,
+    _group: PhantomData<Grp>,
+}
+
+impl MultiRegisters<GroupBank0> {
+    /// SAFETY: Similar to other pins: only 1 instance can have ownership at a
+    /// time
+    unsafe fn new(p: DynPinId) -> Self {
+        assert_eq!(p.group, DynGroup::Bank0);
+
+        Self {
+            mask: 1 << p.num,
+            _group: PhantomData,
+        }
+    }
+}
+
+impl MultiRegisters<GroupQspi> {
+    /// SAFETY: Similar to other pins: only 1 instance can have ownership at a
+    /// time
+    unsafe fn new(p: DynPinId) -> Self {
+        assert_eq!(p.group, DynGroup::Qspi);
+
+        Self {
+            mask: 1 << p.num,
+            _group: PhantomData,
+        }
+    }
+}
+
+unsafe impl<Grp: DynGroupTrait> RegisterInterface for MultiRegisters<Grp> {
+    #[inline]
+    fn id(&self) -> DynPinId {
+        DynPinId {
+            group: DynGroup::Bank0,
+            num: 0, // just default value, DO NOT USE
+        }
+    }
+
+    #[inline]
+    fn mask_32(&self) -> u32 {
+        self.mask
+    }
+}
+
+impl<Grp: DynGroupTrait> Add<MultiRegisters<Grp>> for MultiRegisters<Grp> {
+    type Output = MultiRegisters<Grp>;
+
+    fn add(self, rhs: MultiRegisters<Grp>) -> Self::Output {
+        MultiRegisters {
+            #[allow(clippy::suspicious_arithmetic_impl)]
+            mask: self.mask | rhs.mask,
+            _group: PhantomData,
+        }
+    }
+}
+
 //==============================================================================
 //  Pin
 //==============================================================================
@@ -706,6 +778,69 @@ where
     }
 }
 
+/// Similar to Pin<_,_> which controls a set of pins
+/// all at the same time
+pub struct PinBus<P, M, const N: usize>
+where
+    M: PinMode + ValidPinMode<P::Id>,
+    P: ModePin<M>,
+{
+    /// Takes ownership of pins
+    _pins: [P; N],
+    _mode_marker: PhantomData<M>,
+    regs: MultiRegisters<P::Id::DYN.group>
+}
+
+impl<P, M, const N: usize> PinBus<P, M, N>
+where
+    M: PinMode + ValidPinMode<P::Id>,
+    P: ModePin<M>,
+{
+    /// Private constructor that takes a series of
+    pub(crate) fn new(pins: [P; N]) -> Self {
+        let mut mask = 0;
+        for p in &pins {
+            mask |= 1 << p.as_ref().id().num;
+        }
+
+        PinBus {
+            _pins: pins,
+            mask,
+            _mode_marker: Default::default(),
+        }
+    }
+
+    /// Returns the mask that will be used to write to
+    /// the pins
+    #[inline]
+    pub fn mask(&self) -> u32 {
+        self.mask
+    }
+}
+
+impl<P, C, const N: usize> PinBus<P, Output<C>, N>
+where
+    P: ModePin<Output<C>>,
+    C: OutputConfig,
+{
+}
+
+impl<P, C, const N: usize> OutputPin for PinBus<P, Output<C>, N>
+where
+    P: ModePin<Output<C>>,
+    C: OutputConfig,
+{
+    type Error = Infallible;
+
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        todo!()
+    }
+}
+
 //==============================================================================
 //  AnyPin
 //==============================================================================
@@ -774,6 +909,33 @@ impl<P: AnyPin> AsMut<P> for SpecificPin<P> {
         // to have the same layout as the field anyway, ValidPinMode<P::Id> en for repr(Rust).
         unsafe { transmute(self) }
     }
+}
+
+//==============================================================================
+//  Same mode pins
+//==============================================================================
+
+/// Type-level pin description with pins in the same mode
+pub trait ModePin<M>
+where
+    Self: Sealed,
+    Self: Is<Type = SpecificModePin<Self, M>>,
+    M: PinMode + ValidPinMode<<Self as ModePin<M>>::Id>,
+{
+    /// [`PinId`] of the corresponding [`Pin`]
+    type Id: PinId;
+}
+
+/// Type alias to retrieve back the exact pin from a
+/// ModePin
+pub type SpecificModePin<P, M> = Pin<<P as ModePin<M>>::Id, M>;
+
+impl<I, M> ModePin<M> for Pin<I, M>
+where
+    M: PinMode + ValidPinMode<I>,
+    I: PinId,
+{
+    type Id = I;
 }
 
 //==============================================================================

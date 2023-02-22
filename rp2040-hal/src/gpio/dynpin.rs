@@ -74,6 +74,8 @@
 //! error. If the [`DynPin`] is not in the correct [`DynPinMode`] for the
 //! operation, the trait functions will return
 //! [`InvalidPinType`](Error::InvalidPinType).
+use crate::typelevel::Sealed;
+
 use super::pin::{Pin, PinId, PinMode, ValidPinMode};
 use super::reg::RegisterInterface;
 use super::{Interrupt, InterruptOverride};
@@ -223,6 +225,28 @@ pub enum DynGroup {
     Bank0,
     Qspi,
 }
+
+#[allow(missing_docs)]
+pub trait DynGroupTrait: Sealed + Into<DynGroup> {}
+#[allow(missing_docs)]
+pub struct GroupBank0 {}
+#[allow(missing_docs)]
+pub struct GroupQspi {}
+
+impl DynGroupTrait for GroupBank0 {}
+impl From<GroupBank0> for DynGroup {
+    fn from(_value: GroupBank0) -> Self {
+        DynGroup::Bank0
+    }
+}
+impl Sealed for GroupBank0 {}
+impl DynGroupTrait for GroupQspi {}
+impl From<GroupQspi> for DynGroup {
+    fn from(_value: GroupQspi) -> Self {
+        DynGroup::Qspi
+    }
+}
+impl Sealed for GroupQspi {}
 
 /// Value-level `struct` representing pin IDs
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
